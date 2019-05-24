@@ -16,3 +16,6 @@
 
 # Ignore compiled binaries
 /demutator/demutator
+
+.vscode/
+build/
