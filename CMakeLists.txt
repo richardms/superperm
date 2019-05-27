@@ -11,6 +11,8 @@ project(SPG VERSION 1.0.0 LANGUAGES CXX)
 include_directories("$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/.")
 
 if(MSVC)
+  set(VCPKG_TARGET_TRIPLET "x86-windows" CACHE STRING "VCPKG triplet")
+
   message(STATUS "MSVC ${VCPKG_TARGET_TRIPLET}")
   
   set(VCPKG_ROOT "C:/vcpkg_2017" CACHE STRING "Path to vcpkg installation")
