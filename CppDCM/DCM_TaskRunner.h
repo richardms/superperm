@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "DCM_Ascii.h"
+#include "DCM_Task.h"
 #include "DCM_calc.h"
 #include "DCM_static.h"
 
@@ -31,6 +32,7 @@ public:
   static constexpr uint32_t maxIntM = ((maxInt - 1) >> DBITS) + 1; //	Highest integer representation of an (n-1)-digit sequence we can encounter, plus 1
   static constexpr uint32_t noc = pre_calc_fn(N - 1);              //	Number of 1-cycles
   static constexpr uint32_t nocThresh = noc / 2;                   //	Threshold for unvisited 1-cycles before we try new bounds
+  static constexpr uint32_t ndCount = (maxIntM * nm);
 
   struct DigitScore {
     int digit;
@@ -71,7 +73,7 @@ private:
 
   static const known_list_t known;
 
-  static std::array<DigitScore, maxW> nextDigits;
+  static std::array<DigitScore, ndCount> nextDigits;
 
   static maxint_bitset_t valid; //	Flags saying whether integer rep of digit sequence corresponds to a valid permutation
 
@@ -109,11 +111,10 @@ private:
 
     valid.set(false);
 
-    perm_tab_t perm_tabs;
-    perm_tabs.reserve(n);
+    perm_tab_t perm_tabs{n + 1};
 
     makePerms(n, perm_tabs);
-    auto &p0 = perm_tabs[n - 1];
+    auto &p0 = perm_tabs[n];
     for (int i = 0; i < fn; i++) {
       int tperm = 0, tperm1 = 0, tperm2 = 0;
       for (int j0 = 0; j0 < n; j0++) {
@@ -670,7 +671,7 @@ template <size_t DBITS, size_t N>
 typename const TaskRunner<DBITS, N>::known_list_t TaskRunner<DBITS, N>::known = {};
 
 template <size_t DBITS, size_t N>
-typename std::array<typename TaskRunner<DBITS, N>::DigitScore, TaskRunner<DBITS, N>::maxW> TaskRunner<DBITS, N>::nextDigits;
+typename std::array<typename TaskRunner<DBITS, N>::DigitScore, TaskRunner<DBITS, N>::ndCount> TaskRunner<DBITS, N>::nextDigits;
 
 template <size_t DBITS, size_t N>
 typename TaskRunner<DBITS, N>::maxint_bitset_t TaskRunner<DBITS, N>::valid;
