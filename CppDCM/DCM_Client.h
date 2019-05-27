@@ -3,14 +3,17 @@
 #include <cpr/cpr.h>
 #include <mutex>
 #include <string>
+#include "CSpdlog.h"
 
 namespace DCM {
 
 class Task;
 
-class Client {
+class Client : public CSpdlog {
 public:
-  Client(std::string const &url_, std::string const &team_name_);
+  Client(std::string const &url_, 
+  std::string const &version_, 
+  std::string const &team_name_);
 
   void registerClient();
   void unregisterClient();
@@ -28,6 +31,7 @@ private:
   bool __sendServerCommand(cpr::Parameters const &params, std::string &text);
 
   cpr::Url url;
+  std::string const version;
   std::string const team_name;
   std::string instance;
   std::string clientID;

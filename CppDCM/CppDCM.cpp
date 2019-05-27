@@ -32,9 +32,11 @@ int main(int argc, char *argv[]) {
                task_runner.maxIntM, task_runner.noc,
                task_runner.nocThresh);
 
-  DCM::Client client("10.0.1.23", "The A Team");
+  DCM::Client client("http://127.0.0.1/ChaffinMethod.php", "13", "The A Team");
 
   client.registerClient();
+
+  DCM::Task task = client.getTask();
 
   exit(0);
 }

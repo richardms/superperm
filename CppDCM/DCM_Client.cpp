@@ -18,12 +18,14 @@ static std::vector<std::string> split_into_lines(std::string const &content) {
   return split_content;
 }
 
-Client::Client(std::string const &url_, std::string const &team_name_)
-    : url{url_}, team_name{team_name_} {
+Client::Client(std::string const &url_, std::string const &version_, std::string const &team_name_)
+    : CSpdlog{"client"}, url{url_}, version{version_}, team_name{team_name_} {
+  instance = fmt::format("{}", rand());
 }
 
 void Client::registerClient() {
   cpr::Parameters params{
+      {"version", version},
       {"action", "register"},
       {"programInstance", instance},
       {"team", team_name}};
@@ -53,6 +55,7 @@ void Client::registerClient() {
 
 void Client::unregisterClient() {
   cpr::Parameters params{
+      {"version", version},
       {"action", "unregister"},
       {"clientID", fmt::format("{}", clientID)},
       {"IP", ipAddress},
@@ -64,6 +67,7 @@ void Client::unregisterClient() {
 
 Task Client::getTask() {
   cpr::Parameters params{
+      {"version", version},
       {"action", "getTask"},
       {"clientID", fmt::format("{}", clientID)},
       {"IP", ipAddress},
@@ -80,6 +84,7 @@ void Client::finishTask(Task const &currentTask,
                         std::string const &asciiString,
                         int pro) {
   cpr::Parameters params{
+      {"version", version},
       {"action", "finishTask"},
       {"id", currentTask.task_id},
       {"access", currentTask.access_code},
@@ -96,6 +101,7 @@ void Client::splitTask(Task const &currentTask,
                        std::string const &asciiString,
                        std::string const &asciiString2) {
   cpr::Parameters params{
+      {"version", version},
       {"action", "splitTask"},
       {"id", currentTask.task_id},
       {"access", currentTask.access_code},
@@ -107,6 +113,7 @@ void Client::splitTask(Task const &currentTask,
 }
 void Client::witnessString(Task const &currentTask, int w, std::string const &asciiString) {
   cpr::Parameters params{
+      {"version", version},
       {"action", "witnessString"},
       {"n", fmt::format("{}", currentTask.n_value)},
       {"w", fmt::format("{}", w)},
