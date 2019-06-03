@@ -696,7 +696,7 @@ private:
       };
     };
 
-    return res;
+        return res;
   };
 
   void witnessCurrentString() {
