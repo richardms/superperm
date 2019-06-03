@@ -5,7 +5,9 @@
 #include <string>
 #include <vector>
 
+#include "CSpdlog.h"
 #include "DCM_Ascii.h"
+#include "DCM_Client.h"
 #include "DCM_Task.h"
 #include "DCM_calc.h"
 #include "DCM_static.h"
@@ -13,8 +15,36 @@
 namespace DCM {
 
 template <size_t DBITS, size_t N>
-class TaskRunner {
+class TaskRunner : public CSpdlog {
 public:
+  //	Time we AIM to spend between system calls to check on the time;
+  //	we count nodes between these checks
+
+  static const int TIME_BETWEEN_TIME_CHECKS = (5);
+
+  //	Time for (short) delays when the server wants us to wait
+
+  static const int MIN_SERVER_WAIT = 2;
+  static const int VAR_SERVER_WAIT = 4;
+
+  //	When the time spent on a task exceeds this threshold, we start exponentially reducing the number of nodes
+  //	we explore in each subtree, with an (1/e)-life given
+
+  static const int TAPER_THRESHOLD = (60 * MINUTE);
+
+  static const int TAPER_DECAY = (5 * MINUTE);
+
+  //	Initial number of nodes to check before we bother to check elapsed time;
+  //	we rescale the actual value (in nodesBeforeTimeCheck) if it is too large or too small
+
+  static const int NODES_BEFORE_TIME_CHECK = 20000000L;
+
+  //	Set a floor and ceiling so we can't waste an absurd amount of time doing time checks,
+  //	or take too long between them.
+
+  static const int MIN_NODES_BEFORE_TIME_CHECK = 10000000L;
+  static const int MAX_NODES_BEFORE_TIME_CHECK = 1000000000L;
+
   static constexpr uint32_t pre_calc_fn(uint32_t n = N) {
     return (n == 1) ? 1 : n * pre_calc_fn(n - 1);
   }
@@ -49,7 +79,7 @@ public:
   using maxint_int_array_t = std::array<uint32_t, maxInt>;
   using known_list_t = std::vector<std::array<int, 2>>;
 
-  TaskRunner() {
+  TaskRunner() : CSpdlog{"runner"} {
     if (!sharedDataIsInitialised) {
       initSharedData();
     }
@@ -65,6 +95,16 @@ public:
     AsciiIteratorGenerator ascii_gen(curi, pos);
     asciiString2_.reserve(pos);
     asciiString2_.assign(ascii_gen.cbegin(), ascii_gen.cend());
+  }
+
+  void runTask(Task const &task, Client *client_) {
+    currentTask = task;
+    client = client_;
+
+    if (currentTask.command == Task::None)
+      return;
+
+    doTask();
   }
 
 private:
@@ -85,22 +125,46 @@ private:
   static maxint_int_array_t oneCycleCounts;  //	Number of unvisited permutations in each 1-cycle
   static maxint_int_array_t oneCycleIndices; //	The 1-cycle to which each permutation belongs
 
-  // Member (i.e. non-shared) data
+  static const std::vector<int> ocpThreshold;
 
-  str_array_t curstr; //	Current string as integer digits
-  str_array_t curi;
+  // Member (i.e. non-shared) data
+  Task currentTask;
+  Client *client;
+
+  std::string curstr; //	Current string as integer digits
+  std::string curi;
   std::string asciiString_;  //	String as ASCII digits
   std::string asciiString2_; //	String as ASCII digits
-  str_array_t bestSeen;      //	Longest string seen in search, as integer digits
-
+  std::string bestSeen;      //	Longest string seen in search, as integer digits
+  int bestSeenP;
   uint32_t max_perm;                        //	Maximum number of permutations visited by any string seen so far
   std::array<int32_t, maxW> mperm_res;      //	For each number of wasted characters, the maximum number of permutations that can be visited
   std::array<int32_t, maxW> klbLen;         //	For each number of wasted characters, the lengths of the strings that visit known-lower-bound permutations
   std::array<str_array_t, maxW> klbStrings; //	For each number of wasted characters, a list of all strings that visit known-lower-bound permutations
 
-  maxint_bitset_t unvisited; //	Flags set FALSE when we visit a permutation, indexed by integer rep of permutation
+  maxint_bitset_t unvisited; //	Flags set false when we visit a permutation, indexed by integer rep of permutation
 
   std::array<uint32_t, maxInt + 1> oneCycleBins;
+
+  int tot_bl;                 //	The total number of wasted characters we are allowing in strings, in current search
+  bool done = false;          //	Global flag we can set for speedy fall-through of recursion once we know there is nothing else we want to do
+  bool splitMode = false;     //	Set true when we are splitting the task
+  bool isSuper = false;       //	Set true when we have found a superpermutation
+  bool cancelledTask = false; //	Set true when the server cancelled our connection to the task
+
+  int64_t totalNodeCount, subTreesSplit, subTreesCompleted;
+  int64_t nodesChecked; //	Count of nodes checked since last time check
+  int64_t nodesBeforeTimeCheck = NODES_BEFORE_TIME_CHECK;
+  int64_t nodesToProbe0, nodesToProbe, nodesLeft;
+  time_t startedRunning;          //	Time program started running
+  time_t startedCurrentTask = 0;  //	Time we started current task
+  time_t timeOfLastTimeCheck;     //	Time we last checked the time
+  time_t timeOfLastTimeReport;    //	Time we last reported elapsed time to the user
+  time_t timeOfLastServerCheckin; //	Time we last contacted the server
+
+  int timeBetweenServerCheckins = Task::DEFAULT_TIME_BETWEEN_SERVER_CHECKINS;
+  int timeBeforeSplit = Task::DEFAULT_TIME_BEFORE_SPLIT;
+  int maxTimeInSubtree = Task::DEFAULT_MAX_TIME_IN_SUBTREE;
 
   bool ocpTrackingOn;
 
@@ -283,26 +347,32 @@ private:
 
     int tperm0 = 0;
     int pf = 0;
-    for (int j0 = 0; j0 < currentTask.prefixLen; j0++) {
-      int d = currentTask.prefix[j0] - '0';
-      bestSeen[j0] = curstr[j0] = d;
-      curi[j0] = currentTask.branchOrder[j0] - '0';
+
+    curstr = fromAscii(currentTask.prefix);
+    bestSeen = curstr;
+    curi = fromAscii(currentTask.branchOrder);
+
+    for (auto const d : curstr) {
       tperm0 = (tperm0 >> DBITS) | (d << nmbits);
       if (valid[tperm0]) {
         if (unvisited[tperm0])
           pf++;
-        unvisited[tperm0] = FALSE;
+        unvisited[tperm0] = false;
 
         int prevC, oc;
         oc = oneCycleIndices[tperm0];
         prevC = oneCycleCounts[oc]--;
+        if (prevC - 1 < 0 || prevC > n) {
+          error("oneCycleBins index is out of range (prevC={})", prevC);
+          exit(EXIT_FAILURE);
+        };
+
         oneCycleBins[prevC]--;
         oneCycleBins[prevC - 1]++;
       };
-    };
+    }
     int partNum0 = tperm0 >> DBITS;
     bestSeenP = pf;
-    bestSeenLen = currentTask.prefixLen;
 
     //	Maybe track 1-cycle counts
 
@@ -315,105 +385,162 @@ private:
     subTreesSplit = 0;
     subTreesCompleted = 0;
     time(&startedCurrentTask);
-    time(&timeOfLastCheckin);
+    timeOfLastTimeReport = timeOfLastTimeCheck = startedCurrentTask;
+
+    timeBeforeSplit = currentTask.timeBeforeSplit;
+    maxTimeInSubtree = currentTask.maxTimeInSubtree;
+    timeBetweenServerCheckins = currentTask.timeBetweenServerCheckins;
 
     //	Recursively fill in the string
 
-    done = FALSE;
-    splitMode = FALSE;
+    done = false;
+    splitMode = false;
     max_perm = currentTask.perm_to_exceed;
     isSuper = (max_perm == fn);
 
     if (isSuper || max_perm + 1 < currentTask.prev_perm_ruled_out) {
-      fillStr<false>(currentTask.prefixLen, pf, partNum0);
+      fillStr<false>(currentTask.prefix.size(), pf, partNum0);
     };
+
+    //	Finish with current task with the server
+
+    if (!cancelledTask)
+      client->finishTask(currentTask, toAscii(curstr), max_perm + 1, totalNodeCount);
+
+    //	Give stats on the task
+
+    time_t timeNow;
+    time(&timeNow);
+    int tskTime = (int)difftime(timeNow, startedCurrentTask);
+    int tskMin = tskTime / 60;
+    int tskSec = tskTime % 60;
+
+    info("Finished current search, bestSeenP={}, nodes visited={}, time taken={} min {} sec",
+         bestSeenP, totalNodeCount, tskMin, tskSec);
+    if (splitMode) {
+      info("Delegated {} sub-trees, completed {} locally", subTreesSplit, subTreesCompleted);
+    };
+    info("--------------------------------------------------------");
   }
 
-  template <bool NODE_LIMITED>
-  void fillStr(int pos, int pfound, int partNum) {
-    static char buffer[BUFFER_SIZE];
-    if (done)
-      return;
-
-    if (!NODE_LIMITED && splitMode) {
-      nodesLeft = nodesToProbe;
-      if (fillStr<true>(pos, pfound, partNum)) {
-        if ((subTreesCompleted++) % 10 == 9) {
-          printf("Completed %" PRId64 " sub-trees locally so far ...\n", subTreesCompleted);
-        };
-      } else {
-        splitTask(pos);
-        if ((subTreesSplit++) % 10 == 9) {
-          printf("Delegated %" PRId64 " sub-trees so far ...\n", subTreesSplit);
-        };
-      };
-      return;
-    };
-
-    if (pfound > bestSeenP) {
-      bestSeenP = pfound;
-      bestSeenLen = pos;
-      for (int i = 0; i < bestSeenLen; i++)
-        bestSeen[i] = curstr[i];
-    };
-
+  void nodesAndTime() {
     totalNodeCount++;
     if (++nodesChecked >= nodesBeforeTimeCheck) {
       //	We have hit a threshold for nodes checked, so time to check the time
 
-      time_t t;
-      time(&t);
-      double elapsedTime = difftime(t, timeOfLastCheckin);
+      time_t timeNow;
+      time(&timeNow);
+      double timeSpentOnTask = difftime(timeNow, startedCurrentTask);
+      double timeSinceLastTimeCheck = difftime(timeNow, timeOfLastTimeCheck);
+      double timeSinceLastTimeReport = difftime(timeNow, timeOfLastTimeReport);
+      double timeSinceLastServerCheckin = difftime(timeNow, timeOfLastServerCheckin);
+
+      //	Check for QUIT files
+
+      // for (int k = 2; k < 4; k++) {
+      //   FILE *fp = fopen(sqFiles[k], "r");
+      //   if (fp != NULL) {
+      //     warn("Detected the presence of the file %s, so stopping.\n", sqFiles[k]);
+      //     logString(buffer);
+      //     unregisterClient();
+      //     exit(0);
+      //   };
+      // };
+
+      // if (timeQuotaHardMins > 0) {
+      //   double elapsedTime = difftime(timeNow, startedRunning);
+      //   if (elapsedTime / 60 > timeQuotaHardMins) {
+      //     logString("A 'timeLimitHard' quota has been reached, so the program will relinquish the current task with the server then quit.\n");
+      //     unregisterClient();
+      //     exit(0);
+      //   };
+      // };
+
+      // if (timeSinceLastTimeReport > MINUTE) {
+      //   int tskTime = (int)timeSpentOnTask;
+      //   int tskMin = tskTime / 60;
+      //   int tskSec = tskTime % 60;
+
+      //   printf("Time spent on task so far = ");
+      //   if (tskMin == 0)
+      //     printf("       ");
+      //   else
+      //     printf(" %2d min", tskMin);
+      //   printf(" %2d sec.", tskSec);
+      //   printf("  Nodes searched per second = %" PRId64 "\n", (int64_t)((double)nodesBeforeTimeCheck / (timeSinceLastTimeCheck)));
+      //   timeOfLastTimeReport = timeNow;
+      // };
 
       //	Adjust the number of nodes we check before doing a time check, to bring the elapsed
       //	time closer to the target
 
-      printf("ElapsedTime=%lf\n", elapsedTime);
-      printf("Current nodesBeforeTimeCheck=%" PRId64 "\n", nodesBeforeTimeCheck);
+      nodesBeforeTimeCheck = timeSinceLastTimeCheck <= 0 ? 2 * nodesBeforeTimeCheck : (int64_t)((TIME_BETWEEN_TIME_CHECKS / timeSinceLastTimeCheck) * nodesBeforeTimeCheck);
 
-      int64_t nbtc = nodesBeforeTimeCheck;
-      nodesBeforeTimeCheck = elapsedTime <= 0 ? 2 * nodesBeforeTimeCheck : (int64_t)((TIME_BETWEEN_SERVER_CHECKINS / elapsedTime) * nodesBeforeTimeCheck);
-      if (nbtc != nodesBeforeTimeCheck)
-        printf("Adjusted nodesBeforeTimeCheck=%" PRId64 "\n", nodesBeforeTimeCheck);
-
-      nbtc = nodesBeforeTimeCheck;
       if (nodesBeforeTimeCheck <= MIN_NODES_BEFORE_TIME_CHECK)
         nodesBeforeTimeCheck = MIN_NODES_BEFORE_TIME_CHECK;
       else if (nodesBeforeTimeCheck >= MAX_NODES_BEFORE_TIME_CHECK)
         nodesBeforeTimeCheck = MAX_NODES_BEFORE_TIME_CHECK;
 
-      if (nbtc != nodesBeforeTimeCheck)
-        printf("Clipped nodesBeforeTimeCheck=%" PRId64 "\n", nodesBeforeTimeCheck);
-
-      timeOfLastCheckin = t;
+      timeOfLastTimeCheck = timeNow;
       nodesChecked = 0;
 
-      /*	Version 7.2: Since a change in the maximum permutation is a rare event, it's not really worth the overhead to
-		check for it within a task's run.
-	
-	//	We have hit a threshold for elapsed time since last check in with the server
-	//	Check in and get current maximum for the (n,w) pair we are working on
-	
-	max_perm = getMax(currentTask.n_value, currentTask.w_value, max_perm,
-		currentTask.task_id, currentTask.access_code,clientID,ipAddress,programInstance);
-	isSuper = (max_perm==fn);
-	if (max_perm+1 >= currentTask.prev_perm_ruled_out && !isSuper)
-		{
-		done=TRUE;
-		return;
-		};
-	*/
+      if (timeSinceLastServerCheckin > timeBetweenServerCheckins) {
+        //	When we check in for this task, we might be told it's redundant
 
-      elapsedTime = difftime(t, startedCurrentTask);
-      if (elapsedTime > TIME_BEFORE_SPLIT) {
-        //	We have hit a threshold for elapsed time since we started this task, so split the task
-
-        startedCurrentTask = t;
-        nodesToProbe = (int64_t)(nodesBeforeTimeCheck * MAX_TIME_IN_SUBTREE) / (TIME_BETWEEN_SERVER_CHECKINS);
-        sprintf(buffer, "Splitting current task, will examine up to %" PRId64 " nodes in each subtree ...", nodesToProbe);
-        logString(buffer);
-        splitMode = TRUE;
+        int sres = client->checkIn(currentTask);
+        if (sres >= 2)
+          done = true;
+        if (sres == 3)
+          cancelledTask = true;
       };
+
+      if (!splitMode) {
+        if (timeSpentOnTask > timeBeforeSplit) {
+          //	We have hit a threshold for elapsed time since we started this task, so split the task
+
+          nodesToProbe0 = nodesToProbe = (int64_t)(nodesBeforeTimeCheck * maxTimeInSubtree) / (TIME_BETWEEN_TIME_CHECKS);
+          info("Splitting current task, will examine up to {} nodes in each subtree ...", nodesToProbe);
+          splitMode = true;
+        };
+      };
+
+      //	Taper off nodesToProbe if we have been running too long
+
+      if (timeSpentOnTask > TAPER_THRESHOLD) {
+        nodesToProbe = (int64_t)(nodesToProbe0 * exp(-(timeSpentOnTask - TAPER_THRESHOLD) / TAPER_DECAY));
+        info("Task taking too long, will only examine up to {} nodes in each subtree ...", nodesToProbe);
+      };
+    };
+  }
+
+  template <bool NODE_LIMITED>
+  bool fillStr(std::string &curstr, int pfound, int partNum) {
+    if (done)
+      return true;
+    if (NODE_LIMITED && --nodesLeft < 0)
+      return false;
+    nodesAndTime();
+
+    bool res = true;
+
+    if (!NODE_LIMITED && splitMode) {
+      nodesLeft = nodesToProbe;
+      if (fillStr<true>(curstr, pfound, partNum)) {
+        if ((subTreesCompleted++) % 10 == 9) {
+          warn("Completed {} sub-trees locally so far ...", subTreesCompleted);
+        };
+      } else {
+        splitTask(pos);
+        if ((subTreesSplit++) % 10 == 9) {
+          warn("Delegated {} sub-trees so far ...", subTreesSplit);
+        };
+      };
+      return false;
+    };
+
+    if (pfound > bestSeenP) {
+      bestSeenP = pfound;
+      bestSeen = curstr;
     };
 
     int tperm, ld;
@@ -423,7 +550,7 @@ private:
     //	Loop to try each possible next digit we could append.
     //	These have been sorted into increasing order of ldd[tperm], the minimum number of further wasted characters needed to get a permutation.
 
-    struct digitScore *nd = nextDigits + nm * partNum;
+    DigitScore *nd = &nextDigits[nm * partNum];
 
     //	To be able to fully exploit foreknowledge that we are heading for a visited permutation after 1 wasted character, we need to ensure
     //	that we still traverse the loop in order of increasing waste.
@@ -436,7 +563,7 @@ private:
     //  The affected choices will always be the first two in the loop, and
     //	we only need to swap them if the first permutation is visited and the second is not.
 
-    int swap01 = (nd->score == 1 && (!unvisited[nd->nextPerm]) && unvisited[nd[1].nextPerm]);
+    bool swap01 = (nd->score == 1 && (!unvisited[nd->nextPerm]) && unvisited[nd[1].nextPerm]);
 
     //	Also, it is not obligatory, but useful, to swap the 2nd and 3rd entries (indices 1 and 2) if we have (n-1) distinct digits in the
     //	current prefix, with the first 3 choices ld=0,1,2, but the 1st and 2nd entries lead to a visited permutation.  This will happen
@@ -446,11 +573,15 @@ private:
     //		1234 | add 1 -> 12341 ld = 1 (but 23415 has been visited already)
     //		1234 | add 2 -> 12342 ld = 2
 
-    int swap12 = FALSE; //	This is set later if the conditions are met
+    bool swap12 = false; //	This is set later if the conditions are met
 
-    int deferredRepeat = FALSE; //	If we find a repeated permutation, we follow that branch last
+    bool deferredRepeat = false; //	If we find a repeated permutation, we follow that branch last
 
     int childIndex = 0;
+
+    curstr.push_back(0);
+    auto &back = curstr.back();
+
     for (int y = 0; y < nm; y++) {
       int z;
       if (swap01) {
@@ -458,7 +589,7 @@ private:
           z = 1;
         else if (y == 1) {
           z = 0;
-          swap01 = FALSE;
+          swap01 = false;
         } else
           z = y;
       } else if (swap12) {
@@ -466,13 +597,13 @@ private:
           z = 2;
         else if (y == 2) {
           z = 1;
-          swap12 = FALSE;
+          swap12 = false;
         } else
           z = y;
       } else
         z = y;
 
-      struct digitScore *ndz = nd + z;
+      DigitScore *ndz = nd + z;
       ld = ndz->score;
 
       //	ld tells us the minimum number of further characters we would need to waste
@@ -488,7 +619,7 @@ private:
       if (spareW0 < 0)
         break;
 
-      curstr[pos] = ndz->digit;
+      back = ndz->digit;
       tperm = ndz->fullNum;
 
       int vperm = (ld == 0);
@@ -496,26 +627,25 @@ private:
         if (pfound + 1 > max_perm) {
           max_perm = pfound + 1;
           isSuper = (max_perm == fn);
-          witnessCurrentString(pos + 1);
-          maybeUpdateLowerBound(tperm, pos + 1, tot_bl, max_perm);
+          witnessCurrentString();
+          maybeUpdateLowerBound(tperm, curstr, tot_bl, max_perm);
 
           if (pfound + 1 > bestSeenP) {
             bestSeenP = pfound + 1;
-            bestSeenLen = pos + 1;
-            for (int i = 0; i < bestSeenLen; i++)
-              bestSeen[i] = curstr[i];
+            bestSeen = curstr;
           };
 
           if (max_perm + 1 >= currentTask.prev_perm_ruled_out && !isSuper) {
-            done = TRUE;
-            return;
+            done = true;
+            curstr.pop_back();
+            return true;
           };
         } else if (isSuper && pfound + 1 == max_perm) {
-          witnessCurrentString(pos + 1);
-          maybeUpdateLowerBound(tperm, pos + 1, tot_bl, max_perm);
+          witnessCurrentString();
+          maybeUpdateLowerBound(tperm, curstr, tot_bl, max_perm);
         };
 
-        unvisited[tperm] = FALSE;
+        unvisited[tperm] = false;
         if (ocpTrackingOn) {
           int prevC = 0, oc = 0;
           oc = oneCycleIndices[tperm];
@@ -524,30 +654,34 @@ private:
           oneCycleBins[prevC - 1]++;
 
           curi[pos] = childIndex++;
-          fillStr(pos + 1, pfound + 1, ndz->nextPart);
+          res = fillStr<NODE_LIMITED>(curstr, pfound + 1, ndz->nextPart);
 
           oneCycleBins[prevC - 1]--;
           oneCycleBins[prevC]++;
           oneCycleCounts[oc] = prevC;
         } else {
           curi[pos] = childIndex++;
-          fillStr<NODE_LIMITED>(pos + 1, pfound + 1, ndz->nextPart);
+          res = fillStr<NODE_LIMITED>(curstr, pfound + 1, ndz->nextPart);
         };
-        unvisited[tperm] = TRUE;
+        unvisited[tperm] = true;
       } else if (spareW > 0) {
         if (vperm) {
-          deferredRepeat = TRUE;
+          deferredRepeat = true;
           swap12 = !unvisited[nd[1].nextPerm];
         } else {
           int d = pruneOnPerms(spareW0, pfound - max_perm);
           if (d > 0 || (isSuper && d >= 0)) {
             curi[pos] = childIndex++;
-            fillStr<NODE_LIMITED>(pos + 1, pfound, ndz->nextPart);
+            res = fillStr<NODE_LIMITED>(curstr, pfound, ndz->nextPart);
           } else {
             break;
           };
         };
       };
+      if (!res) {
+        curstr.pop_back();
+        return false;
+      }
     };
 
     //	If we encountered a choice that led to a repeat visit to a permutation, we follow (or prune) that branch now.
@@ -558,55 +692,40 @@ private:
       if (d > 0 || (isSuper && d >= 0)) {
         curstr[pos] = nd->digit;
         curi[pos] = childIndex++;
-        fillStr<NODE_LIMITED>(pos + 1, pfound, nd->nextPart);
+        fillStr<NODE_LIMITED>(curstr, pfound, nd->nextPart);
       };
     };
+
+    return res;
   };
 
-  void witnessCurrentString(int size) {
-    static char buffer[BUFFER_SIZE];
-
-    //	Convert current digit string to null-terminated ASCII string
-
-    for (int k = 0; k < size; k++)
-      asciiString[k] = '0' + curstr[k];
-    asciiString[size] = '\0';
+  void witnessCurrentString() {
+    std::string asciiString = toAscii(curstr);
 
     //	Log the new best string locally
+    warn("Found {} permutations in string {}", max_perm, asciiString);
 
-    sprintf(buffer, "Found %d permutations in string %s", max_perm, asciiString);
-    logString(buffer);
-
-#if !NO_SERVER
-
-    //	Log it with the server
-
-    sprintf(buffer, "action=witnessString&n=%u&w=%u&str=%s&team=%s", n, tot_bl, asciiString, teamName);
-    sendServerCommandAndLog(buffer, NULL);
-#endif
+    client->witnessString(currentTask, tot_bl, asciiString);
   }
 
-  void witnessLowerBound(char *s, int size, int w, int p) {
-    static char buffer[BUFFER_SIZE];
-
-    //	Convert digit string to null-terminated ASCII string
-
-    for (int k = 0; k < size; k++)
-      asciiString[k] = '0' + s[k];
-    asciiString[size] = '\0';
+  void witnessLowerBound(std::string const &s, int w, int p) {
+    std::string asciiString = toAscii(s);
 
     //	Log the string locally
+    warn("Found new lower bound string for w={} with {} permutations in string {}", w, p, asciiString);
 
-    sprintf(buffer, "Found new lower bound string for w=%d with %d permutations in string %s", w, p, asciiString);
-    logString(buffer);
+    client->witnessString(currentTask, w, asciiString);
+  }
 
-#if !NO_SERVER
+  //	Create a new task to delegate a branch exploration that the current task would have performed
+  //	Returns 1,2,3 for OK/Done/Cancelled
 
-    //	Log it with the server
+  int splitTask(int pos) {
+    int res = 0;
 
-    sprintf(buffer, "action=witnessString&n=%u&w=%u&str=%s&team=%s", n, w, asciiString, teamName);
-    sendServerCommandAndLog(buffer, NULL);
-#endif
+    client->splitTask(currentTask, curstr, curi);
+
+    return res;
   }
 
   //	Compare two digitScore structures for quicksort()
@@ -634,7 +753,7 @@ private:
 
   int pruneOnPerms(int w, int d0) {
     int res = d0 + mperm_res[w];
-    if (ocpTrackingOff || res < 0)
+    if (!ocpTrackingOn || res < 0)
       return res;
     int res0 = d0;
     w++; //	We have already subtracted waste characters needed to reach first permutation, so we get the first 1-cycle for free
@@ -661,6 +780,113 @@ private:
       };
     };
     return res0;
+  }
+
+  //	Try to get a new lower bound for weight w+1 by appending digits.
+  //
+  //	See how many permutations we get by following a single weight-2 edge, and then as many weight-1 edges
+  //	as possible before we hit a permutation already visited.
+
+  void maybeUpdateLowerBoundAppend(int tperm, std::string &str, int w, int p) {
+    std::vector<int> unv(MAX_N + 1);
+
+    unvisited[tperm] = false;
+
+    //	Follow weight-2 edge
+
+    int t = successor2[tperm];
+
+    //	Follow successive weight-1 edges
+
+    int nu = 0, okT = 0;
+    while (unvisited[t]) {
+      unv[nu++] = t;        //	Record, so we can unroll
+      unvisited[t] = false; //	Mark as visited
+      okT = t;              //	Record the last unvisited permutation integer
+      t = successor1[t];
+    };
+
+    int m = p + nu;
+    if (nu > 0 && m > mperm_res[w + 1]) {
+      mperm_res[w + 1] = m;
+
+      str.push_back(str[str.size() - (n - 1)]);
+      str.push_back(str[str.size() - n]);
+      str.append(str.substr(str.size() - (n - 2), nu - 1));
+
+      klbStrings[w + 1] = str;
+      witnessLowerBound(klbStrings[w + 1], w + 1, m);
+
+      maybeUpdateLowerBoundAppend(okT, str, w + 1, m);
+    };
+
+    for (int i = 0; i < nu; i++)
+      unvisited[unv[i]] = true;
+    unvisited[tperm] = true;
+  }
+
+  //	Try to get a new lower bound for weight w+1 by splicing in digits.
+  //
+  //	This particular startegy will only work for n=6 and strings that contain a weight-3 edge.
+  //
+  //	We follow a weight-2 edge instead of the weight-3 edge, then follow four weight-1 edges, then
+  //	a weight-3 edge will again take us back to the permutation we would have reached without the detour.
+  //	If all five permutations in question were unvisited, we will have added them at the cost of an increase in
+  //	weight of 1.
+
+  void maybeUpdateLowerBoundSplice(std::string const &str, int w, int p) {
+    if (n != 6 || mperm_res[w + 1] >= p + 5)
+      return; //	Nothing to gain
+
+    std::vector<bool> wasted{str.size()};
+    std::vector<int> perms { str.size() }
+
+    //	Identify wasted characters in the current string
+    int tperm0 = 0;
+    for (int j0 = 0; j0 < str.size(); j0++) {
+      int d = curstr[j0];
+      tperm0 = (tperm0 >> DBITS) | (d << nmbits);
+      perms[j0] = tperm0;
+      wasted[j0] = !valid[tperm0];
+    };
+
+    //	Look for weight-3 edges.  Skip the initial n-1 characters, which will always be marked as wasted.
+
+    for (int j0 = n; j0 + 3 < size; j0++) {
+      if (!wasted[j0] && wasted[j0 + 1] && wasted[j0 + 2] && !wasted[j0 + 3]) {
+        //	We are at a weight-3 edge
+
+        int t0 = perms[j0];
+        int t = successor2[t0];
+        int nu = 0, okT = 0;
+        while (unvisited[t] && nu < 5) {
+          nu++;
+          okT = t; //	Record the last unvisited permutation integer
+          t = successor1[t];
+        };
+        if (nu == 5) {
+          //	We found 5 unvisited permutations we can visit this way
+
+          mperm_res[w + 1] = p + 5;
+          int sz = j0 + 1;
+          std::string &ks = klbStrings[w + 1];
+          ks = curstr.substr(0, sz);
+          ks.push_back(ks[sz - (n - 1)]);
+          ks.push_back(ks[sz - (n - 0)]);
+          ks.append(ks.substr(sz - (n - 2), nu - 1));
+          ks.append(str.substr(j0 + 1));
+
+          witnessLowerBound(klbStrings[w + 1], w + 1, p + 5);
+          break;
+        };
+      };
+    };
+  }
+
+  void maybeUpdateLowerBound(int tperm, std::string const &str, int w, int p) {
+    std::string working = str;
+    maybeUpdateLowerBoundSplice(working, w, p);
+    maybeUpdateLowerBoundAppend(tperm, working, w, p);
   }
 };
 
@@ -689,6 +915,9 @@ template <size_t DBITS, size_t N>
 typename TaskRunner<DBITS, N>::maxint_int_array_t TaskRunner<DBITS, N>::oneCycleCounts; //	Number of unvisited permutations in each 1-cycle
 template <size_t DBITS, size_t N>
 typename TaskRunner<DBITS, N>::maxint_int_array_t TaskRunner<DBITS, N>::oneCycleIndices; //	The 1-cycle to which each permutation belongs
+
+template <size_t DBITS, size_t N>
+typename const std::vector<int> TaskRunner<DBITS, N>::ocpThreshold{1000, 1000, 1000, 1000, 6, 24, 120, 720}; //	The 1-cycle to which each permutation belongs
 
 } // namespace DCM
 #endif

@@ -38,5 +38,7 @@ int main(int argc, char *argv[]) {
 
   DCM::Task task = client.getTask();
 
+  task_runner.runTask(task, &client);
+
   exit(0);
 }

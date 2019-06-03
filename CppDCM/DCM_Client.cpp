@@ -82,7 +82,8 @@ Task Client::getTask() {
 }
 void Client::finishTask(Task const &currentTask,
                         std::string const &asciiString,
-                        int pro) {
+                        int pro,
+                        int64_t nodeCount) {
   cpr::Parameters params{
       {"version", version},
       {"action", "finishTask"},
@@ -90,6 +91,7 @@ void Client::finishTask(Task const &currentTask,
       {"access", currentTask.access_code},
       {"str", asciiString},
       {"pro", fmt::format("{}", pro)},
+      {"nodeCount", fmt::format("{}", nodeCount)},
       {"team", team_name}};
 
   std::string reply;

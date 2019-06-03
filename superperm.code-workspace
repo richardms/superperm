@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "C:\\xampp"
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"array": "cpp"
+		}
+	}
+}

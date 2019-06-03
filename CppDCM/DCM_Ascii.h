@@ -55,6 +55,9 @@ private:
   std::size_t __len;
 };
 
+extern std::string fromAscii(std::string const &ascii);
+extern std::string toAscii(std::string const &ascii);
+
 } // namespace DCM
 
 #endif

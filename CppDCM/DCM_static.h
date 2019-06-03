@@ -7,7 +7,9 @@
 
 namespace DCM {
 
+static const int MINUTE = 60;
+
 extern std::map<uint32_t, std::vector<std::array<uint32_t, 2>>> known_map;
-}
+} // namespace DCM
 
 #endif
