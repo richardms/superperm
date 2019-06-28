@@ -140,7 +140,7 @@ private:
   uint32_t max_perm;                        //	Maximum number of permutations visited by any string seen so far
   std::array<int32_t, maxW> mperm_res;      //	For each number of wasted characters, the maximum number of permutations that can be visited
   std::array<int32_t, maxW> klbLen;         //	For each number of wasted characters, the lengths of the strings that visit known-lower-bound permutations
-  std::array<str_array_t, maxW> klbStrings; //	For each number of wasted characters, a list of all strings that visit known-lower-bound permutations
+  std::array<std::string, maxW> klbStrings; //	For each number of wasted characters, a list of all strings that visit known-lower-bound permutations
 
   maxint_bitset_t unvisited; //	Flags set false when we visit a permutation, indexed by integer rep of permutation
 
@@ -399,7 +399,7 @@ private:
     isSuper = (max_perm == fn);
 
     if (isSuper || max_perm + 1 < currentTask.prev_perm_ruled_out) {
-      fillStr<false>(currentTask.prefix.size(), pf, partNum0);
+      fillStr<false>(pf, partNum0);
     };
 
     //	Finish with current task with the server
@@ -514,18 +514,20 @@ private:
   }
 
   template <bool NODE_LIMITED>
-  bool fillStr(std::string &curstr, int pfound, int partNum) {
+  bool fillStr(int pfound, int partNum) {
     if (done)
       return true;
     if (NODE_LIMITED && --nodesLeft < 0)
       return false;
     nodesAndTime();
 
+    size_t pos = curstr.size();
+
     bool res = true;
 
     if (!NODE_LIMITED && splitMode) {
       nodesLeft = nodesToProbe;
-      if (fillStr<true>(curstr, pfound, partNum)) {
+      if (fillStr<true>(pfound, partNum)) {
         if ((subTreesCompleted++) % 10 == 9) {
           warn("Completed {} sub-trees locally so far ...", subTreesCompleted);
         };
@@ -654,14 +656,14 @@ private:
           oneCycleBins[prevC - 1]++;
 
           curi[pos] = childIndex++;
-          res = fillStr<NODE_LIMITED>(curstr, pfound + 1, ndz->nextPart);
+          res = fillStr<NODE_LIMITED>(pfound + 1, ndz->nextPart);
 
           oneCycleBins[prevC - 1]--;
           oneCycleBins[prevC]++;
           oneCycleCounts[oc] = prevC;
         } else {
           curi[pos] = childIndex++;
-          res = fillStr<NODE_LIMITED>(curstr, pfound + 1, ndz->nextPart);
+          res = fillStr<NODE_LIMITED>(pfound + 1, ndz->nextPart);
         };
         unvisited[tperm] = true;
       } else if (spareW > 0) {
@@ -672,7 +674,7 @@ private:
           int d = pruneOnPerms(spareW0, pfound - max_perm);
           if (d > 0 || (isSuper && d >= 0)) {
             curi[pos] = childIndex++;
-            res = fillStr<NODE_LIMITED>(curstr, pfound, ndz->nextPart);
+            res = fillStr<NODE_LIMITED>(pfound, ndz->nextPart);
           } else {
             break;
           };
@@ -692,11 +694,11 @@ private:
       if (d > 0 || (isSuper && d >= 0)) {
         curstr[pos] = nd->digit;
         curi[pos] = childIndex++;
-        fillStr<NODE_LIMITED>(curstr, pfound, nd->nextPart);
+        fillStr<NODE_LIMITED>(pfound, nd->nextPart);
       };
     };
 
-        return res;
+    return res;
   };
 
   void witnessCurrentString() {
@@ -788,7 +790,7 @@ private:
   //	as possible before we hit a permutation already visited.
 
   void maybeUpdateLowerBoundAppend(int tperm, std::string &str, int w, int p) {
-    std::vector<int> unv(MAX_N + 1);
+    std::vector<int> unv(N + 1);
 
     unvisited[tperm] = false;
 
@@ -838,8 +840,8 @@ private:
     if (n != 6 || mperm_res[w + 1] >= p + 5)
       return; //	Nothing to gain
 
-    std::vector<bool> wasted{str.size()};
-    std::vector<int> perms { str.size() }
+    std::vector<bool> wasted(str.size(), false);
+    std::vector<int> perms(str.size(), 0);
 
     //	Identify wasted characters in the current string
     int tperm0 = 0;
@@ -852,7 +854,7 @@ private:
 
     //	Look for weight-3 edges.  Skip the initial n-1 characters, which will always be marked as wasted.
 
-    for (int j0 = n; j0 + 3 < size; j0++) {
+    for (int j0 = n; j0 + 3 < str.size(); j0++) {
       if (!wasted[j0] && wasted[j0 + 1] && wasted[j0 + 2] && !wasted[j0 + 3]) {
         //	We are at a weight-3 edge
 

@@ -4,59 +4,23 @@
 
 namespace DCM {
 
-template <typename T>
-class AsciiIteratorGenerator {
-public:
-  class AsciiIterator : public std::iterator<std::forward_iterator_tag, char> {
-    //    typedef AsciiIterator<T> iterator;
+static std::string &&fromAscii(std::string const &ascii) {
+  std::string natural;
+  natural.reserve(ascii.size());
+  std::transform(ascii.cbegin(), ascii.cend(), natural.begin(), [](char c) {
+    return c + '0';
+  });
+  return std::move(natural);
+}
 
-  public:
-    AsciiIterator() : __ptr(nullptr), __pos(0) {}
-    AsciiIterator(T const *v, std::size_t p) : __ptr(v), __pos(p) {}
-    ~AsciiIterator() {}
-
-    iterator operator++(int) /* postfix */ { return pos_++; }
-    iterator &operator++() /* prefix */ {
-      ++pos_;
-      return *this;
-    }
-    reference operator*() const { return '0' + (__ptr[__pos]); }
-    pointer operator->() const { return __ptr + __pos; }
-    iterator operator+(difference_type v) const { return __pos + v; }
-    bool operator==(const iterator &rhs) const { return __pos == rhs.__pos; }
-    bool operator!=(const iterator &rhs) const { return __pos != rhs.__pos; }
-
-  private:
-    T const *__ptr;
-    std::size_t __pos;
-  };
-
-  AsciiIteratorGenerator(T const *array, int len) : __ptr(array), __len(len) {
-  }
-
-  AsciiIterator begin() {
-    return AsciiIterator(__ptr, 0);
-  }
-
-  AsciiIterator end() {
-    return AsciiIterator(__ptr, __len);
-  }
-
-  const AsciiIterator cbegin() {
-    return AsciiIterator(__ptr, 0);
-  }
-
-  const AsciiIterator cend() {
-    return AsciiIterator(__ptr, __len);
-  }
-
-private:
-  T const *__ptr;
-  std::size_t __len;
-};
-
-extern std::string fromAscii(std::string const &ascii);
-extern std::string toAscii(std::string const &ascii);
+static std::string &&toAscii(std::string const &natural) {
+  std::string ascii;
+  ascii.reserve(natural.size());
+  std::transform(natural.cbegin(), natural.cend(), ascii.begin(), [](char c) {
+    return c - '0';
+  });
+  return std::move(ascii);
+}
 
 } // namespace DCM
 

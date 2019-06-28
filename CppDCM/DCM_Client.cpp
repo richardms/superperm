@@ -98,6 +98,10 @@ void Client::finishTask(Task const &currentTask,
   __sendServerCommand(params, reply);
 }
 
+int Client::checkIn(Task const &currentTask) {
+  return 0;
+}
+
 //int Client::getMax(Task const &currentTask, int nval, int wval, int oldMax, unsigned int tid, unsigned int acc, unsigned int cid, char *ip, unsigned int pi);
 void Client::splitTask(Task const &currentTask,
                        std::string const &asciiString,
