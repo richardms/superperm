@@ -9,8 +9,8 @@ Version: 1 to 8, 10 - 13
 Secondary Author: Jay Pantone
 Version: 9
 
-Current version: 13.1
-Last Updated: 24 May 2019
+Current version: 13.3
+Last Updated: 29 May 2019
 
 This program implements Benjamin Chaffin's algorithm for finding minimal superpermutations with a branch-and-bound
 search.  It is based in part on Nathaniel Johnston's 2014 version of Chaffin's algorithm; see:
@@ -53,6 +53,8 @@ For more details, see the accompanying README.
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <errno.h>
+
 
 #ifdef _WIN32
 
@@ -308,6 +310,8 @@ int timeBetweenServerCheckins = DEFAULT_TIME_BETWEEN_SERVER_CHECKINS;
 int timeBeforeSplit = DEFAULT_TIME_BEFORE_SPLIT;
 int maxTimeInSubtree = DEFAULT_MAX_TIME_IN_SUBTREE;
 
+int serverPressure = 0;				//	Set greater than 0 if server is facing heavy traffic
+
 #if UNIX_LIKE
 
 //	Signal action structure
@@ -340,6 +344,10 @@ static char *sqFiles[]={STOP_FILE_NAME,STOP_FILE_ALL,QUIT_FILE_NAME,QUIT_FILE_AL
 #define DEFAULT_TIME_LIMIT 120
 int timeQuotaMins=0, timeQuotaHardMins=0, timeQuotaEitherMins=0;
 
+//	When "longRunner" option is chosen, task never decides it is taking too long and shrinks sub-tree depth
+
+int longRunner=FALSE;
+
 //  Default team name
 #define DEFAULT_TEAM_NAME "anonymous"
 #define MAX_TEAM_NAME_LENGTH 32
@@ -371,7 +379,6 @@ void registerClient(void);
 void unregisterClient(void);
 void relinquishTask(void);
 int getTask(struct task *tsk);
-int getMax(int nval, int wval, int oldMax, unsigned int tid, unsigned int acc, unsigned int cid, char *ip, unsigned int pi);
 void doTask(void);
 int checkIn(void);
 int splitTask(int pos);
@@ -403,6 +410,7 @@ FILE *fp;
 int justTest=FALSE;
 timeQuotaMins=0;
 timeQuotaHardMins=0;
+longRunner=FALSE;
 teamName = DEFAULT_TEAM_NAME;
 currentTask.task_id = 0;
 
@@ -457,6 +465,7 @@ logString(buffer);
 for (int i=1;i<argc;i++)
 	{
 	if (strcmp(argv[i],"test")==0) justTest=TRUE;
+	else if (strcmp(argv[i],"longRunner")==0) longRunner=TRUE;
 	else if (strcmp(argv[i],"timeLimit")==0)
 		{
 		if (i+1<argc)
@@ -636,7 +645,7 @@ while (TRUE)
 		
 	//	If we did a very quick task, maybe sleep
 	
-	if (startedCurrentTask>0)
+	if (serverPressure>0 && startedCurrentTask>0)
 		{
 		time_t timeNow;
 		time(&timeNow);
@@ -1190,7 +1199,7 @@ if (++nodesChecked >= nodesBeforeTimeCheck)
 	
 	//	Taper off nodesToProbe if we have been running too long
 
-	if (timeSpentOnTask > TAPER_THRESHOLD)
+	if ((!longRunner) && timeSpentOnTask > TAPER_THRESHOLD)
 		{
 		nodesToProbe = (int64_t)(nodesToProbe0 * exp(-(timeSpentOnTask-TAPER_THRESHOLD)/TAPER_DECAY));
 		sprintf(buffer,"Task taking too long, will only examine up to %"PRId64" nodes in each subtree ...",nodesToProbe);
@@ -1791,7 +1800,7 @@ printf("%s %s\n",tsb, s);
 FILE *fp = fopen(LOG_FILE_NAME,"at");
 if (fp==NULL)
 	{
-	printf("Error: Unable to open log file %s to append\n",LOG_FILE_NAME);
+	printf("Error: Unable to open log file %s to append (%s)\n",LOG_FILE_NAME, strerror(errno));
 	exit(EXIT_FAILURE);
 	};
 fprintf(fp,"%s %s\n",tsb, s);
@@ -1817,7 +1826,7 @@ int getServerInstanceCount()
 FILE *fp = fopen(SERVER_RESPONSE_FILE_NAME,"wt");
 if (fp==NULL)
 	{
-	printf("Error: Unable to write to server response file %s\n",SERVER_RESPONSE_FILE_NAME);
+	printf("Error: Unable to write to server response file %s (%s)\n",SERVER_RESPONSE_FILE_NAME, strerror(errno));
 	exit(EXIT_FAILURE);
 	};
 fclose(fp);
@@ -1836,7 +1845,7 @@ if (res!=0) return 1;
 fp = fopen(SERVER_RESPONSE_FILE_NAME,"rt");
 if (fp==NULL)
 	{
-	printf("Error: Unable to read server response file %s\n",SERVER_RESPONSE_FILE_NAME);
+	printf("Error: Unable to read server response file %s (%s)\n",SERVER_RESPONSE_FILE_NAME, strerror(errno));
 	exit(EXIT_FAILURE);
 	};
 if (fscanf(fp,"%d",&res)!=1) res=1;
@@ -1881,7 +1890,7 @@ while (TRUE)
 FILE *fp = fopen(SERVER_RESPONSE_FILE_NAME,"wt");
 if (fp==NULL)
 	{
-	printf("Error: Unable to write to server response file %s\n",SERVER_RESPONSE_FILE_NAME);
+	printf("Error: Unable to write to server response file %s (%s)\n",SERVER_RESPONSE_FILE_NAME, strerror(errno));
 	exit(EXIT_FAILURE);
 	};
 fclose(fp);
@@ -1902,7 +1911,7 @@ free(cmd);
 fp = fopen(SERVER_RESPONSE_FILE_NAME,"r");
 if (fp==NULL)
 	{
-	printf("Error: Unable to open server response file %s to read\n",SERVER_RESPONSE_FILE_NAME);
+	printf("Error: Unable to open server response file %s to read (%s)\n",SERVER_RESPONSE_FILE_NAME, strerror(errno));
 	exit(EXIT_FAILURE);
 	};
 fseek(fp,0,SEEK_END);
@@ -1945,7 +1954,7 @@ int error=FALSE, wait=FALSE, response=0;
 FILE *fp = fopen(SERVER_RESPONSE_FILE_NAME,"rt");
 if (fp==NULL)
 	{
-	printf("Unable to read from server response file %s\n",SERVER_RESPONSE_FILE_NAME);
+	printf("Unable to read from server response file %s (%s)\n",SERVER_RESPONSE_FILE_NAME, strerror(errno));
 	exit(EXIT_FAILURE);
 	};
 
@@ -1965,7 +1974,14 @@ while (!feof(fp))
 	lineNumber++;
 		
 	if (strncmp(buffer,"Error",5)==0) error=TRUE;
+	
 	if (strncmp(buffer,"Wait",4)==0) wait=TRUE;
+	
+	if (strncmp(buffer,"Pressure: ",10)==0)
+		{
+		if (sscanf(buffer+10, "%d", &serverPressure) !=1) serverPressure=0;
+		};
+	
 	if (lineNumber==1 && responseList!=NULL)
 		{
 		for (int q=0;q<nrl;q++)
@@ -2110,7 +2126,7 @@ sendServerCommandAndLog(buffer,NULL,0);
 FILE *fp = fopen(SERVER_RESPONSE_FILE_NAME,"rt");
 if (fp==NULL)
 	{
-	printf("Unable to read from server response file %s\n",SERVER_RESPONSE_FILE_NAME);
+	printf("Unable to read from server response file %s (%s)\n",SERVER_RESPONSE_FILE_NAME, strerror(errno));
 	exit(EXIT_FAILURE);
 	};
 
@@ -2228,60 +2244,6 @@ while (TRUE)
 #endif
 }
 
-int getMax(int nval, int wval, int oldMax, unsigned int tid, unsigned int acc, unsigned int cid, char *ip, unsigned int pi)
-{
-#if NO_SERVER
-
-return oldMax;
-
-#else
-
-static char buffer[BUFFER_SIZE];
-sprintf(buffer,
-	"action=checkMax&n=%d&w=%d&id=%u&access=%u&clientID=%u&IP=%s&programInstance=%u",
-		nval, wval, tid, acc, cid, ip, pi);
-sendServerCommandAndLog(buffer,NULL,0);
-
-FILE *fp = fopen(SERVER_RESPONSE_FILE_NAME,"rt");
-if (fp==NULL)
-	{
-	printf("Unable to read from server response file %s\n",SERVER_RESPONSE_FILE_NAME);
-	exit(EXIT_FAILURE);
-	};
-
-int max = oldMax;
-while (!feof(fp))
-	{
-	//	Get a line from the server response, ensure it is null-terminated without a newline
-	
-	char *f=fgets(buffer,BUFFER_SIZE,fp);
-	if (f==NULL) break;
-	size_t blen = strlen(buffer);
-	if (buffer[blen-1]=='\n')
-		{
-		buffer[blen-1]='\0';
-		blen--;
-		};
-	
-	if (buffer[0]=='(')
-		{
-		int n0, w0, p0;
-		sscanf(buffer+1,"%d,%d,%d",&n0,&w0,&p0);
-		if (n0==nval && w0==wval && p0 > oldMax)
-			{
-			max = p0;
-			sprintf(buffer,"Updated max_perm to %d",max);
-			logString(buffer);
-			};
-		break;
-		};
-	};
-fclose(fp);
-
-return max;
-#endif
-}
-
 //	Create a new task to delegate a branch exploration that the current task would have performed
 //	Returns 1,2,3 for OK/Done/Cancelled
 
@@ -2364,7 +2326,7 @@ while (TRUE)
 FILE *fp = fopen(SERVER_RESPONSE_FILE_NAME,"rt");
 if (fp==NULL)
 	{
-	printf("Unable to read from server response file %s\n",SERVER_RESPONSE_FILE_NAME);
+	printf("Unable to read from server response file %s (%s)\n",SERVER_RESPONSE_FILE_NAME, strerror(errno));
 	exit(EXIT_FAILURE);
 	};
 

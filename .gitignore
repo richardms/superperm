@@ -19,3 +19,8 @@
 
 .vscode/
 build/
+DistributedChaffinMethod/DistributedChaffinMethod
+
+# Ignore DistributedChaffinMethod generated files
+DCMLog_*.txt
+DCMServerResponse_*.txt

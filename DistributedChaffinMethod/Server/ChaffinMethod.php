@@ -37,12 +37,19 @@ define('CLIENT_CHECKIN', 180);		//	Default
 define('MAX_TIME_IN_SUBTREE', 0);		//	Default (not actual time, just means usual values)
 //define('MAX_TIME_IN_SUBTREE', 300);	//	Extreme slowdown
 
+//	*** Emergency slowdown lever 4 ***
+
+//	If a file ServerPressure.txt exists in the PHP_FILES directory, we tell the client the server is under pressure and to slow down
+
+function getServerPressure() {
+	return 'Pressure: ' . (file_exists(PHP_FILES . 'ServerPressure.txt') ? '1' : '0') . "\n";
+}
+
 //	**********************************
 
-//	Main or fork repo to send people to for upgrade
+//	Repo to send people to for upgrade
 
-//define('CODE_REPO','https://github.com/superpermutators/superperm/blob/master/DistributedChaffinMethod/DistributedChaffinMethod.c');
-define('CODE_REPO','https://github.com/nagegerg/superperm/blob/master/DistributedChaffinMethod/DistributedChaffinMethod.c [Note this is still just a test fork of the main project.]');
+define('CODE_REPO','https://github.com/superpermutators/superperm/blob/master/DistributedChaffinMethod');
 
 //	Version of the client ABSOLUTELY required.
 //  Note that if this is changed while clients are running tasks,
@@ -60,7 +67,7 @@ $versionForNewTasks = 13;
 
 //	Maximum number of clients to register
 
-$maxClients = 5000;
+$maxClients = 10000;
 
 //	Maximum number of times to retry a transaction
 
@@ -282,13 +289,19 @@ function maybeUpdateWitnessStrings($n, $w, $p, $str, $pro, $teamName) {
 				
 					if ($pro > 0 && $pro < $pexcl) {
 						$final = ($pro == $p+1) ? "Y" : "N";
-						$res = $pdo->prepare("REPLACE INTO witness_strings (n,waste,perms,str,excl_perms,final,team) VALUES(?, ?, ?, ?, ?, ?, ?)");
-						$res->execute([$n, $w, $p, $str, $pro, $final, $teamName]);
+//						$res = $pdo->prepare("REPLACE INTO witness_strings (n,waste,perms,str,excl_perms,final,team) VALUES(?, ?, ?, ?, ?, ?, ?)");
+//						$res->execute([$n, $w, $p, $str, $pro, $final, $teamName]);
+
+						$res = $pdo->prepare("UPDATE witness_strings SET perms=?, str=?, excl_perms=?, final=?, team=? WHERE n=? AND waste=?");
+						$res->execute([$p, $str, $pro, $final, $teamName, $n, $w]);
 						$result = "($n, $w, $p)\n";
 						$pexcl = $pro;
 					} else {
-						$res = $pdo->prepare("REPLACE INTO witness_strings (n,waste,perms,str,team) VALUES(?, ?, ?, ?, ?)");
-						$res->execute([$n, $w, $p, $str, $teamName]);
+//						$res = $pdo->prepare("REPLACE INTO witness_strings (n,waste,perms,str,team) VALUES(?, ?, ?, ?, ?)");
+//						$res->execute([$n, $w, $p, $str, $teamName]);
+
+						$res = $pdo->prepare("UPDATE witness_strings SET perms=?, str=?, team=? WHERE n=? AND waste=?");
+						$res->execute([$p, $str, $teamName, $n, $w]);
 						$result = "($n, $w, $p)\n";
 					}
 				} else {
@@ -1033,6 +1046,8 @@ function maybeFinishedAllTasks() {
 function finishTask($id, $access, $pro, $str, $teamName, $nodeCount, $stressTest) {
 	global $pdo, $maxRetries, $stage;
 	
+	$sp = getServerPressure();
+	
 	//	Transaction #1: 'tasks' / 'finished_tasks' / 'num_redundant_tasks'
 
 	$ok=FALSE;
@@ -1138,7 +1153,7 @@ function finishTask($id, $access, $pro, $str, $teamName, $nodeCount, $stressTest
 		}
 	}
 	
-	if (!$ok) return $result;
+	if (!$ok) return $result . $sp;
 	
 	if ($redun) {
 	
@@ -1312,7 +1327,7 @@ function finishTask($id, $access, $pro, $str, $teamName, $nodeCount, $stressTest
 	
 	if ($n==5 || ($n==6 && $w < 100)) maybeFinishedAllTasks();
 
-	return "OK\n";
+	return "OK\n" . $sp;
 }
 
 //	Function to check-in a task
