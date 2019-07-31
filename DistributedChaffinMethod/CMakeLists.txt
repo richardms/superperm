@@ -1,0 +1,4 @@
+add_executable(DistributedChaffinMethod
+DistributedChaffinMethod.c
+)
+

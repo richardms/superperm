@@ -23,3 +23,5 @@ legacy_stdio_definitions.lib
 ${Boost_LIBRARIES}
 "-NODEFAULTLIB:LIBCMT"
 )
+
+set_property(TARGET CppDCM APPEND_STRING PROPERTY LINK_FLAGS " /STACK:8388608")

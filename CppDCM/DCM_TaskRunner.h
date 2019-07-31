@@ -75,7 +75,7 @@ public:
   using str_array_t = std::array<uint8_t, 2 * fn>;
   using n_int_array_t = std::array<uint32_t, N>;
   using n_uint8_array_t = std::array<uint8_t, N>;
-  using maxint_bitset_t = std::bitset<maxInt>;
+  using maxint_bitset_t = std::array<bool, maxInt>;
   using maxint_int_array_t = std::array<uint32_t, maxInt>;
   using known_list_t = std::vector<std::array<int, 2>>;
 
@@ -173,7 +173,7 @@ private:
       return;
     }
 
-    valid.set(false);
+    valid.fill(false);
 
     perm_tab_t perm_tabs{n + 1};
 
@@ -316,10 +316,6 @@ private:
   }
 
   void initData() {
-    klbLen.fill(0);
-    for (auto &klbStr : klbStrings)
-      klbStr.fill(0);
-
     mperm_res.fill(N);
     if (known_map.count(N)) {
       auto known = known_map[N];
@@ -334,8 +330,10 @@ private:
   void doTask() {
     tot_bl = currentTask.w_value;
 
+    initData();
+
     //	Initialise all permutations as unvisited
-    unvisited.set();
+    unvisited.fill(false);
 
     //	Initialise 1-cycle information
     oneCycleCounts.fill(n);
@@ -352,23 +350,28 @@ private:
     bestSeen = curstr;
     curi = fromAscii(currentTask.branchOrder);
 
+    curstr.reserve(maxW);
+    curi.reserve(maxW);
+    bestSeen.reserve(maxW);
+
     for (auto const d : curstr) {
       tperm0 = (tperm0 >> DBITS) | (d << nmbits);
       if (valid[tperm0]) {
-        if (unvisited[tperm0])
+        if (unvisited[tperm0]) {
           pf++;
-        unvisited[tperm0] = false;
+          unvisited[tperm0] = false;
 
-        int prevC, oc;
-        oc = oneCycleIndices[tperm0];
-        prevC = oneCycleCounts[oc]--;
-        if (prevC - 1 < 0 || prevC > n) {
-          error("oneCycleBins index is out of range (prevC={})", prevC);
-          exit(EXIT_FAILURE);
-        };
+          int prevC, oc;
+          oc = oneCycleIndices[tperm0];
+          prevC = oneCycleCounts[oc]--;
+          if (prevC - 1 < 0 || prevC > n) {
+            error("oneCycleBins index is out of range (prevC={})", prevC);
+            exit(EXIT_FAILURE);
+          };
 
-        oneCycleBins[prevC]--;
-        oneCycleBins[prevC - 1]++;
+          oneCycleBins[prevC]--;
+          oneCycleBins[prevC - 1]++;
+        }
       };
     }
     int partNum0 = tperm0 >> DBITS;
@@ -514,14 +517,19 @@ private:
   }
 
   template <bool NODE_LIMITED>
-  bool fillStr(int pfound, int partNum) {
+  bool fillStr(int pfound, int partNum) noexcept {
     if (done)
       return true;
     if (NODE_LIMITED && --nodesLeft < 0)
       return false;
     nodesAndTime();
+    // info("fillStr {} {} {} {}",
+    //      NODE_LIMITED ? 1 : 0,
+    //      curstr.size(),
+    //      pfound,
+    //      partNum);
 
-    size_t pos = curstr.size();
+    //info("        {}", toAscii(curstr));
 
     bool res = true;
 
@@ -532,7 +540,7 @@ private:
           warn("Completed {} sub-trees locally so far ...", subTreesCompleted);
         };
       } else {
-        splitTask(pos);
+        splitTask(curstr.size());
         if ((subTreesSplit++) % 10 == 9) {
           warn("Delegated {} sub-trees so far ...", subTreesSplit);
         };
@@ -546,8 +554,8 @@ private:
     };
 
     int tperm, ld;
-    int alreadyWasted = pos - pfound - n + 1; //	Number of character wasted so far
-    int spareW = tot_bl - alreadyWasted;      //	Maximum number of further characters we can waste while not exceeding tot_bl
+    int alreadyWasted = curstr.size() - pfound - n + 1; //	Number of character wasted so far
+    int spareW = tot_bl - alreadyWasted;                //	Maximum number of further characters we can waste while not exceeding tot_bl
 
     //	Loop to try each possible next digit we could append.
     //	These have been sorted into increasing order of ldd[tperm], the minimum number of further wasted characters needed to get a permutation.
@@ -582,7 +590,7 @@ private:
     int childIndex = 0;
 
     curstr.push_back(0);
-    auto &back = curstr.back();
+    curi.push_back(0);
 
     for (int y = 0; y < nm; y++) {
       int z;
@@ -621,7 +629,7 @@ private:
       if (spareW0 < 0)
         break;
 
-      back = ndz->digit;
+      curstr.back() = ndz->digit;
       tperm = ndz->fullNum;
 
       int vperm = (ld == 0);
@@ -640,6 +648,7 @@ private:
           if (max_perm + 1 >= currentTask.prev_perm_ruled_out && !isSuper) {
             done = true;
             curstr.pop_back();
+            curi.pop_back();
             return true;
           };
         } else if (isSuper && pfound + 1 == max_perm) {
@@ -655,14 +664,14 @@ private:
           oneCycleBins[prevC]--;
           oneCycleBins[prevC - 1]++;
 
-          curi[pos] = childIndex++;
+          curi.back() = childIndex++;
           res = fillStr<NODE_LIMITED>(pfound + 1, ndz->nextPart);
 
           oneCycleBins[prevC - 1]--;
           oneCycleBins[prevC]++;
           oneCycleCounts[oc] = prevC;
         } else {
-          curi[pos] = childIndex++;
+          curi.back() = childIndex++;
           res = fillStr<NODE_LIMITED>(pfound + 1, ndz->nextPart);
         };
         unvisited[tperm] = true;
@@ -673,15 +682,16 @@ private:
         } else {
           int d = pruneOnPerms(spareW0, pfound - max_perm);
           if (d > 0 || (isSuper && d >= 0)) {
-            curi[pos] = childIndex++;
+            curi.back() = childIndex++;
             res = fillStr<NODE_LIMITED>(pfound, ndz->nextPart);
           } else {
             break;
           };
         };
       };
-      if (!res) {
+      if (NODE_LIMITED && !res) {
         curstr.pop_back();
+        curi.pop_back();
         return false;
       }
     };
@@ -692,12 +702,15 @@ private:
     if (deferredRepeat) {
       int d = pruneOnPerms(spareW - 1, pfound - max_perm);
       if (d > 0 || (isSuper && d >= 0)) {
-        curstr[pos] = nd->digit;
-        curi[pos] = childIndex++;
+        curstr.back() = nd->digit;
+        curi.back() = childIndex++;
         fillStr<NODE_LIMITED>(pfound, nd->nextPart);
       };
     };
 
+    curstr.pop_back();
+    curi.pop_back();
+    // info("< {} {}", __LINE__, curstr.size());
     return res;
   };
 

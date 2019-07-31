@@ -1,0 +1,18 @@
+{
+  "version": "0.2.1",
+  "defaults": {},
+  "configurations": [
+    {
+      "type": "default",
+      "project": "CMakeLists.txt",
+      "projectTarget": "CppDCM.exe (CppDCM\\CppDCM.exe)",
+      "name": "CppDCM.exe (CppDCM\\CppDCM.exe)"
+    },
+    {
+      "type": "default",
+      "project": "CMakeLists.txt",
+      "projectTarget": "DistributedChaffinMethod.exe (DistributedChaffinMethod\\DistributedChaffinMethod.exe)",
+      "name": "DistributedChaffinMethod.exe (DistributedChaffinMethod\\DistributedChaffinMethod.exe)"
+    }
+  ]
+}
